@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Ninja Christmas Run</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { width:100%; height:100%; overflow:hidden; font-family:'Segoe UI',sans-serif; background:#0b1a2a; }
+  canvas { display:block; }
+  #hud {
+    position:fixed; top:10px; left:0; width:100%; padding:0 14px;
+    display:flex; justify-content:space-between; align-items:center;
+    color:#fff; font-weight:700; font-size:16px; text-shadow:0 2px 6px rgba(0,0,0,.6);
+    pointer-events:none; z-index:10;
+  }
+  #hud .box { background:rgba(0,0,0,.35); padding:6px 12px; border-radius:10px; }
+  #pauseBtn {
+    position:fixed; top:10px; right:14px; z-index:20;
+    background:rgba(0,0,0,.45); color:#fff; border:none; padding:8px 14px;
+    border-radius:10px; font-weight:700; cursor:pointer; font-size:14px;
+  }
+  .overlay {
+    position:fixed; inset:0; display:none; flex-direction:column;
+    align-items:center; justify-content:center; gap:16px;
+    background:rgba(5,15,25,.9); color:#fff; z-index:30; padding:20px; text-align:center;
+  }
+  .overlay.show { display:flex; }
+  .overlay h1 { font-size:2.2rem; color:#ffd166; letter-spacing:1px; }
+  .overlay h2 { font-size:1.4rem; color:#ff6b6b; }
+  .overlay p { font-size:1rem; color:#cfe0ee; max-width:420px; }
+  .btn {
+    background:linear-gradient(145deg,#ff6b6b,#d63031); color:#fff; border:none;
+    padding:12px 26px; border-radius:30px; font-size:1rem; font-weight:700;
+    cursor:pointer; box-shadow:0 6px 18px rgba(214,48,49,.5); transition:transform .15s;
+  }
+  .btn:hover { transform:scale(1.05); }
+  .btn.alt { background:linear-gradient(145deg,#4ecdc4,#2980b9); box-shadow:0 6px 18px rgba(41,128,185,.5); }
+  .diffs { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+  .diff {
+    padding:10px 18px; border-radius:20px; border:2px solid #fff4; background:#fff1;
+    color:#fff; font-weight:700; cursor:pointer; transition:.2s;
+  }
+  .diff.active, .diff:hover { background:#fff; color:#0b1a2a; }
+  #touchControls { position:fixed; inset:0; z-index:15; display:none; }
+  #touchControls div {
+    position:absolute; width:50%; height:50%; opacity:0;
+  }
+  #touchControls .swipe-hint {
+    position:absolute; bottom:20px; width:100%; text-align:center;
+    color:#fff8; font-size:13px; pointer-events:none; opacity:1;
+  }
+  #touchControls .z-left { left:0; bottom:0; }
+  #touchControls .z-right { right:0; bottom:0; }
+  #touchControls .z-top { left:0; top:0; width:100%; height:50%; }
+  @media (hover:none) and (pointer:coarse) { #touchControls { display:block; } }
+</style>
+</head>
+<body>
+
+<div id="hud">
+  <div class="box" id="scoreBox">🪙 0</div>
+  <div class="box" id="timeBox">⏱ 0.00s</div>
+</div>
+<button id="pauseBtn">⏸ Pause</button>
+
+<div id="touchControls">
+  <div class="z-left"></div>
+  <div class="z-right"></div>
+  <div class="z-top"></div>
+  <div class="swipe-hint">Glisse : ← → changer de couloir · ↑ sauter · ↓ glisser</div>
+</div>
+
+<!-- ÉCRAN TITRE / DIFFICULTÉ -->
+<div class="overlay show" id="menu">
+  <h1>🎄 NINJA CHRISTMAS RUN 🎄</h1>
+  <p>Choisis ta difficulté. Évite les obstacles, ramasse les pièces.</p>
+  <div class="diffs" id="diffs">
+    <button class="diff active" data-d="facile">Facile</button>
+    <button class="diff" data-d="normal">Normal</button>
+    <button class="diff" data-d="difficile">Difficile</button>
+    <button class="diff" data-d="extreme">Extrême</button>
+  </div>
+  <button class="btn" id="startBtn">▶ Lancer la run</button>
+</div>
+
+<!-- ÉCRAN PAUSE -->
+<div class="overlay" id="pauseMenu">
+  <h1>⏸ Pause</h1>
+  <p>Le chrono est en pause.</p>
+  <button class="btn alt" id="resumeBtn">▶ Reprendre</button>
+  <button class="btn" id="quitBtn">↺ Recommencer</button>
+</div>
+
+<!-- ÉCRAN GAME OVER -->
+<div class="overlay" id="gameOver">
+  <h1>💥 Game Over</h1>
+  <h2 id="finalScore">Score : 0</h2>
+  <p id="finalTime">Temps : 0.00s</p>
+  <button class="btn" id="retryBtn">↺ Recommencer</button>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+/* ====================== CONFIG ====================== */
+const LANE_X = [-2.2, 0, 2.2];         // 3 couloirs
+const DIFF = {
+  facile:    { speed: 9,  spawnGap: 1.4, coinRate: 0.55 },
+  normal:    { speed: 14, spawnGap: 1.0, coinRate: 0.5  },
+  difficile: { speed: 20, spawnGap: 0.75, coinRate: 0.45 },
+  extreme:   { speed: 28, spawnGap: 0.55, coinRate: 0.4  }
+};
+let currentDiff = 'facile';
+let cfg = DIFF[currentDiff];
+
+/* ====================== ÉTAT ====================== */
+let state = 'menu';        // menu | playing | paused | over
+let score = 0;
+let elapsed = 0;           // secondes de run
+let lastTime = 0;
+
+let playerLane = 1;
+let playerY = 0;
+let playerVY = 0;
+let isSliding = false;
+let slideTimer = 0;
+let isJumping = false;
+
+/* ====================== SCÈNE ====================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1f33);
+scene.fog = new THREE.Fog(0x0d1f33, 25, 70);
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.1, 200);
+camera.position.set(0, 5.5, 9);
+camera.lookAt(0, 1.5, -5);
+
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* Lumières */
+scene.add(new THREE.AmbientLight(0x88aadd, 0.9));
+const moon = new THREE.DirectionalLight(0xffffff, 1.1);
+moon.position.set(8, 18, 6);
+moon.castShadow = true;
+moon.shadow.mapSize.set(1024,1024);
+moon.shadow.camera.left = -20; moon.shadow.camera.right = 20;
+moon.shadow.camera.top = 20;  moon.shadow.camera.bottom = -20;
+scene.add(moon);
+const warm = new THREE.PointLight(0xffaa66, 1.2, 40);
+warm.position.set(0, 6, 5);
+scene.add(warm);
+
+/* ====================== SOL (neige) ====================== */
+const groundGeo = new THREE.PlaneGeometry(14, 400, 1, 100);
+const groundMat = new THREE.MeshStandardMaterial({ color:0xeaf4ff, roughness:0.9, metalness:0.05 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI/2;
+ground.position.z = -150;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* Trois bandes de couloirs subtiles */
+for (const x of LANE_X) {
+  const stripe = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.15, 400),
+    new THREE.MeshBasicMaterial({ color:0xbcd6ee, transparent:true, opacity:0.35 })
+  );
+  stripe.rotation.x = -Math.PI/2;
+  stripe.position.set(x + 1.1, 0.01, -150);
+  scene.add(stripe);
+}
+
+/* ====================== DÉCOR NOËL ====================== */
+// Sapins de chaque côté
+function makeTree() {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18,0.22,0.9,8),
+    new THREE.MeshStandardMaterial({ color:0x5a3a1e })
+  );
+  trunk.position.y = 0.45;
+  g.add(trunk);
+  const shades = [0x1f7a3f, 0x2a8f4d, 0x35a35c];
+  for (let i=0;i<3;i++) {
+    const cone = new THREE.Mesh(
+      new THREE.ConeGeometry(1.1 - i*0.25, 1.2, 10),
+      new THREE.MeshStandardMaterial({ color:shades[i], roughness:0.8 })
+    );
+    cone.position.y = 0.9 + i*0.75;
+    cone.castShadow = true;
+    g.add(cone);
+  }
+  // étoile
+  const star = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.16),
+    new THREE.MeshStandardMaterial({ color:0xffd166, emissive:0xffaa33, emissiveIntensity:0.8 })
+  );
+  star.position.y = 2.9;
+  g.add(star);
+  return g;
+}
+
+const decorGroup = new THREE.Group();
+scene.add(decorGroup);
+for (let i=0;i<40;i++) {
+  const t = makeTree();
+  const side = Math.random() < 0.5 ? -1 : 1;
+  t.position.set(side * (5 + Math.random()*6), 0, -i*10 - Math.random()*10);
+  const s = 0.7 + Math.random()*0.6;
+  t.scale.setScalar(s);
+  decorGroup.add(t);
+}
+
+// Cadeaux
+function makeGift() {
+  const g = new THREE.Group();
+  const colors = [0xd63031, 0x2980b9, 0x27ae60, 0xf39c12];
+  const c = colors[Math.floor(Math.random()*colors.length)];
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(0.7,0.7,0.7),
+    new THREE.MeshStandardMaterial({ color:c, roughness:0.6 })
+  );
+  box.castShadow = true;
+  g.add(box);
+  const ribbonMat = new THREE.MeshStandardMaterial({ color:0xffd166 });
+  const r1 = new THREE.Mesh(new THREE.BoxGeometry(0.75,0.15,0.15), ribbonMat);
+  const r2 = new THREE.Mesh(new THREE.BoxGeometry(0.15,0.75,0.15), ribbonMat);
+  const r3 = new THREE.Mesh(new THREE.BoxGeometry(0.15,0.15,0.75), ribbonMat);
+  g.add(r1,r2,r3);
+  return g;
+}
+for (let i=0;i<15;i++) {
+  const gift = makeGift();
+  const side = Math.random() < 0.5 ? -1 : 1;
+  gift.position.set(side * (4.6 + Math.random()*2), 0.35, -i*25 - Math.random()*15);
+  gift.rotation.y = Math.random()*Math.PI;
+  decorGroup.add(gift);
+}
+
+/* Neige */
+const snowGeo = new THREE.BufferGeometry();
+const snowCount = 600;
+const snowPos = new Float32Array(snowCount*3);
+for (let i=0;i<snowCount;i++) {
+  snowPos[i*3]   = (Math.random()-0.5)*40;
+  snowPos[i*3+1] = Math.random()*25;
+  snowPos[i*3+2] = (Math.random()-0.5)*100 - 30;
+}
+snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
+const snowMat = new THREE.PointsMaterial({ color:0xffffff, size:0.12, transparent:true, opacity:0.85 });
+const snow = new THREE.Points(snowGeo, snowMat);
+scene.add(snow);
+
+/* ====================== SKIN NINJA ====================== */
+function createNinja() {
+  const g = new THREE.Group();
+  const black = new THREE.MeshStandardMaterial({ color:0x1a1a24, roughness:0.7 });
+  const red   = new THREE.MeshStandardMaterial({ color:0xc0392b, roughness:0.6 });
+
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.32, 0.6, 6, 12), black);
+  body.position.y = 0.85;
+  body.castShadow = true;
+  g.add(body);
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 16), black);
+  head.position.y = 1.55;
+  head.castShadow = true;
+  g.add(head);
+
+  // bandeau rouge
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.05, 8, 20), red);
+  band.position.y = 1.6;
+  band.rotation.x = Math.PI/2;
+  g.add(band);
+
+  // yeux
+  const eyeMat = new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xffffff, emissiveIntensity:0.6 });
+  for (const sx of [-0.1, 0.1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), eyeMat);
+    eye.position.set(sx, 1.58, 0.26);
+    g.add(eye);
+  }
+
+  // jambes
+  for (const sx of [-0.15, 0.15]) {
+    const leg = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, 0.4, 4, 8), black);
+    leg.position.set(sx, 0.25, 0);
+    leg.castShadow = true;
+    g.add(leg);
+  }
+  // bras
+  for (const sx of [-0.42, 0.42]) {
+    const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.1, 0.4, 4, 8), black);
+    arm.position.set(sx, 1.0, 0);
+    arm.rotation.z = sx > 0 ? -0.15 : 0.15;
+    arm.castShadow = true;
+    g.add(arm);
+  }
+  return g;
+}
+const ninja = createNinja();
+ninja.position.set(0, 0, 0);
+scene.add(ninja);
+
+/* ====================== ENTITÉS DYNAMIQUES ====================== */
+const entities = []; // {mesh, type:'obstacle'|'coin', lane, z}
+
+function spawnEntity(type, lane, z) {
+  let mesh;
+  if (type === 'obstacle') {
+    // Obstacle = bonhomme de neige / bloc de glace selon random
+    const grp = new THREE.Group();
+    if (Math.random() < 0.5) {
+      // bonhomme de neige
+      const s1 = new THREE.Mesh(new THREE.SphereGeometry(0.45,12,12),
+        new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.9}));
+      s1.position.y = 0.45; grp.add(s1);
+      const s2 = new THREE.Mesh(new THREE.SphereGeometry(0.32,12,12),
+        new THREE.MeshStandardMaterial({color:0xffffff, roughness:0.9}));
+      s2.position.y = 1.0; grp.add(s2);
+      const nose = new THREE.Mesh(new THREE.ConeGeometry(0.06,0.25,8),
+        new THREE.MeshStandardMaterial({color:0xff7a00}));
+      nose.position.set(0,1.0,0.32); nose.rotation.x = Math.PI/2; grp.add(nose);
+    } else {
+      // bloc de glace
+      const ice = new THREE.Mesh(
+        new THREE.BoxGeometry(1.0,1.2,1.0),
+        new THREE.MeshStandardMaterial({ color:0x8ecae6, transparent:true, opacity:0.8,
+          roughness:0.1, metalness:0.3 })
+      );
+      ice.position.y = 0.6; grp.add(ice);
+    }
+    mesh = grp;
+  } else {
+    // pièce
+    mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.28,0.28,0.08,20),
+      new THREE.MeshStandardMaterial({ color:0xffd166, emissive:0xffaa33, emissiveIntensity:0.7, metalness:0.7, roughness:0.3 })
+    );
+    mesh.rotation.x = Math.PI/2;
+    mesh.position.y = 1.0;
+  }
+  mesh.position.x = LANE_X[lane];
+  mesh.position.z = z;
+  scene.add(mesh);
+  entities.push({ mesh, type, lane, baseY: mesh.position.y });
+}
+
+/* ====================== CONTRÔLES ====================== */
+function moveLane(dir) {
+  if (state !== 'playing') return;
+  playerLane = Math.max(0, Math.min(2, playerLane + dir));
+}
+function jump() {
+  if (state !== 'playing' || isJumping) return;
+  if (isSliding) { isSliding = false; slideTimer = 0; ninja.scale.y = 1; ninja.position.y = 0; }
+  isJumping = true;
+  playerVY = 9;
+}
+function slide() {
+  if (state !== 'playing' || isSliding) return;
+  if (isJumping) return;
+  isSliding = true;
+  slideTimer = 0.6;
+  ninja.scale.y = 0.5;
+  ninja.position.y = 0;
+}
+
+addEventListener('keydown', e => {
+  if (e.key === 'ArrowLeft'  || e.key === 'q' || e.key === 'Q') moveLane(-1);
+  if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') moveLane(1);
+  if (e.key === 'ArrowUp'    || e.key === 'z' || e.key === 'Z' || e.key === ' ') jump();
+  if (e.key === 'ArrowDown'  || e.key === 's' || e.key === 'S') slide();
+  if (e.key === 'Escape') togglePause();
+  if (e.key === 'p' || e.key === 'P') togglePause();
+});
+
+/* Contrôles tactiles (swipe) */
+let touchStart = null;
+const touchZone = document.getElementById('touchControls');
+touchZone.addEventListener('touchstart', e => {
+  touchStart = { x:e.touches[0].clientX, y:e.touches[0].clientY, t:Date.now() };
+}, { passive:true });
+touchZone.addEventListener('touchend', e => {
+  if (!touchStart) return;
+  const dx = e.changedTouches[0].clientX - touchStart.x;
+  const dy = e.changedTouches[0].clientY - touchStart.y;
+  const adx = Math.abs(dx), ady = Math.abs(dy);
+  if (Math.max(adx, ady) < 30) { jump(); touchStart = null; return; } // tap = saut
+  if (adx > ady) { moveLane(dx > 0 ? 1 : -1); }
+  else { if (dy < 0) jump(); else slide(); }
+  touchStart = null;
+}, { passive:true });
+
+/* ====================== GESTION JEU ====================== */
+const pauseBtn = document.getElementById('pauseBtn');
+const menuEl   = document.getElementById('menu');
+const pauseEl  = document.getElementById('pauseMenu');
+const overEl   = document.getElementById('gameOver');
+const scoreBox = document.getElementById('scoreBox');
+const timeBox  = document.getElementById('timeBox');
+const finalScoreEl = document.getElementById('finalScore');
+const finalTimeEl  = document.getElementById('finalTime');
+const diffsEl = document.getElementById('diffs');
+
+diffsEl.addEventListener('click', e => {
+  if (!e.target.classList.contains('diff')) return;
+  [...diffsEl.children].forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  currentDiff = e.target.dataset.d;
+  cfg = DIFF[currentDiff];
+});
+
+function resetGame() {
+  // supprimer entités
+  for (const en of entities) scene.remove(en.mesh);
+  entities.length = 0;
+  // reset joueur
+  playerLane = 1; playerY = 0; playerVY = 0;
+  isJumping = false; isSliding = false; slideTimer = 0;
+  ninja.position.set(0,0,0); ninja.scale.y = 1;
+  score = 0; elapsed = 0;
+  scoreBox.textContent = '🪙 0';
+  timeBox.textContent = '⏱ 0.00s';
+  spawnTimer = 0;
+  coinTimer = 0;
+}
+
+let spawnTimer = 0;
+let coinTimer  = 0;
+const Z_START = -70;
+
+function startGame() {
+  resetGame();
+  state = 'playing';
+  menuEl.classList.remove('show');
+  pauseEl.classList.remove('show');
+  overEl.classList.remove('show');
+  lastTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+function togglePause() {
+  if (state === 'playing') {
+    state = 'paused';
+    pauseEl.classList.add('show');
+  } else if (state === 'paused') {
+    state = 'playing';
+    pauseEl.classList.remove('show');
+    lastTime = performance.now();
+    requestAnimationFrame(loop);
+  }
+}
+
+function gameOver() {
+  state = 'over';
+  finalScoreEl.textContent = 'Score : ' + score;
+  finalTimeEl.textContent  = 'Temps : ' + elapsed.toFixed(2) + 's';
+  overEl.classList.add('show');
+}
+
+document.getElementById('startBtn').addEventListener('click', startGame);
+document.getElementById('resumeBtn').addEventListener('click', togglePause);
+document.getElementById('quitBtn').addEventListener('click', () => {
+  pauseEl.classList.remove('show');
+  menuEl.classList.add('show');
+  state = 'menu';
+});
+document.getElementById('retryBtn').addEventListener('click', () => {
+  overEl.classList.remove('show');
+  menuEl.classList.add('show');
+  state = 'menu';
+});
+pauseBtn.addEventListener('click', togglePause);
+
+/* ====================== COLLISIONS ====================== */
+function collides(a, b, radius) {
+  const dx = a.position.x - b.position.x;
+  const dz = a.position.z - b.position.z;
+  const dy = a.position.y - b.position.y;
+  return dx*dx + dz*dz < radius*radius && Math.abs(dy) < 1.2;
+}
+
+/* ====================== BOUCLE ====================== */
+function loop(now) {
+  if (state !== 'playing') {
+    renderer.render(scene, camera);
+    return;
+  }
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+  elapsed += dt;
+
+  // affichage temps
+  timeBox.textContent = '⏱ ' + elapsed.toFixed(2) + 's';
+
+  // vitesse augmente doucement avec le temps
+  const speed = cfg.speed + elapsed * 0.35;
+
+  // mouvement du décor (illusion d'avance)
+  decorGroup.children.forEach(c => {
+    c.position.z += speed * dt;
+    if (c.position.z > 15) c.position.z -= 400;
+  });
+  snow.children; // neige animée plus bas
+  const sp = snow.geometry.attributes.position.array;
+  for (let i=0;i<snowCount;i++) {
+    sp[i*3+1] -= dt * 1.5;
+    sp[i*3+2] += speed * dt * 0.4;
+    if (sp[i*3+1] < 0) sp[i*3+1] = 25;
+    if (sp[i*3+2] > 20) sp[i*3+2] = -80;
+  }
+  snow.geometry.attributes.position.needsUpdate = true;
+
+  // joueur : interpolation couloir
+  const targetX = LANE_X[playerLane];
+  ninja.position.x += (targetX - ninja.position.x) * Math.min(1, dt*14);
+
+  // saut
+  if (isJumping) {
+    playerVY -= 26 * dt;
+    ninja.position.y += playerVY * dt;
+    if (ninja.position.y <= 0) {
+      ninja.position.y = 0;
+      isJumping = false;
+      playerVY = 0;
+    }
+  }
+
+  // glissade
+  if (isSliding) {
+    slideTimer -= dt;
+    if (slideTimer <= 0) {
+      isSliding = false;
+      ninja.scale.y = 1;
+      ninja.position.y = 0;
+    }
+  }
+
+  // spawn
+  spawnTimer += dt;
+  coinTimer += dt;
+
+  if (spawnTimer > cfg.spawnGap) {
+    spawnTimer = 0;
+    const lane = Math.floor(Math.random()*3);
+    spawnEntity('obstacle', lane, Z_START);
+  }
+  if (coinTimer > cfg.coinRate) {
+    coinTimer = 0;
+    const lane = Math.floor(Math.random()*3);
+    spawnEntity('coin', lane, Z_START);
+  }
+
+  // déplacement + collisions entités
+  for (let i = entities.length - 1; i >= 0; i--) {
+    const en = entities[i];
+    en.mesh.position.z += speed * dt;
+    // rotation pièce
+    if (en.type === 'coin') en.mesh.rotation.z += dt * 5;
+
+    // collision joueur
+    if (collides(ninja, en.mesh, en.type === 'coin' ? 0.8 : 1.0)) {
+      if (en.type === 'coin') {
+        score++;
+        scoreBox.textContent = '🪙 ' + score;
+        scene.remove(en.mesh);
+        entities.splice(i,1);
+        continue;
+      } else {
+        // obstacle = game over
+        gameOver();
+        return;
+      }
+    }
+
+    // hors champ
+    if (en.mesh.position.z > 12) {
+      scene.remove(en.mesh);
+      entities.splice(i,1);
+    }
+  }
+
+  // animation ninja (petit balancement)
+  const t = now * 0.005;
+  if (!isSlidingi
+    
